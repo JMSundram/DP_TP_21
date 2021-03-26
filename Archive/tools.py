@@ -178,5 +178,5 @@ def GaussHermite_lognorm(sigma,n):
     w = w / math.sqrt(math.pi)
 
     # assert a mean of one
-    assert(1 - np.sum(w*x) < 1e-8), 'The mean in GH-lognorm is not 1'
+    assert(1 - np.sum(w*x) < 1e-8 ), 'The mean in GH-lognorm is not 1'
     return x, w
