@@ -1,6 +1,5 @@
 import numpy as np
 import tools
-from scipy import optimize
 from numba import njit, prange
 from numba.experimental import jitclass
 from numba.types import double, int32
@@ -39,9 +38,10 @@ def run_model(par):
     # Create grids
     par.grid_m = tools.nonlinspace(1e-6,par.m_max,par.Nm,par.m_phi)
     par.grid_h = tools.nonlinspace(0,par.h_max,par.Nh,par.h_phi)
+    par.grid_a = tools.nonlinspace(1e-6,par.m_max,par.Nm,par.m_phi)
      
     # Create solution and simulation
-    spec = [('c', double[:,:,:,:]), ('inv_v', double[:,:,:,:])]
+    spec = [('m', double[:,:,:,:]), ('c', double[:,:,:,:]), ('inv_v', double[:,:,:,:])]
     @jitclass(spec)
     class sol_:
         def __init__(self): pass
@@ -56,10 +56,11 @@ def run_model(par):
 
     # Allocate memory for solution
     sol = sol_()
-    sol_shape = (par.T,par.Nm,2,par.Nh)
+    sol_shape = (par.T,par.Na+1,2,par.Nh)
+    sol.m = np.zeros(sol_shape)
     sol.c = np.zeros(sol_shape)
-    sol.inv_v = np.zeros(sol_shape)
-
+    sol.inv_v = np.zeros((par.T,par.Nm,2,par.Nh))
+    
     # Allocate memory for simulation
     sim = sim_()
     sim_shape = (par.simN,par.T)
@@ -80,7 +81,7 @@ def run_model(par):
     sim.h = np.zeros(sim_shape)
     sim.H = np.zeros(sim_shape)
     
-    # 2. Solve model by VFI
+    # 2. Solve model by EGM
     @njit
     def utility(c, rho):
         return c**(1-rho)/(1-rho)    
@@ -92,7 +93,7 @@ def run_model(par):
     @njit
     def inv_marg_utility(u, rho):
         return u**(-1/rho)  
-
+    
     @njit
     def value_of_choice(c,t,m,h,z,par,sol):
         # End-of-period assets
@@ -143,31 +144,118 @@ def run_model(par):
         return -total
 
     # Last period (= consume all)
-    for z in [0, 1]:
-        for i_h in range(par.Nh):
-            sol.c[-1,:,z,i_h] = par.grid_m
-            for i,c in enumerate(sol.c[-1,:,z,i_h]):
-                sol.inv_v[-1,i,z,i_h] = 1.0/utility(c,par.rho)
-
-        # Before last period
-        for t in reversed(range(par.T-1)):
-            for i_h, h in enumerate(par.grid_h):
-                if t >= par.TR and i_h != 0: # After retirement, solution is independent of z and h
-                    sol.c[t,:,z,i_h] = sol.c[t,:,0,0]
-                    sol.inv_v[t,:,z,i_h] = sol.inv_v[t,:,0,0]
-                elif t >= par.TH and z == 1 and i_h != 0: # After early holiday pay, solution is independent of h
-                    sol.c[t,:,z,i_h] = sol.c[t,:,z,0]
-                    sol.inv_v[t,:,z,i_h] = sol.inv_v[t,:,z,0]
-                elif t < par.TH-1 and i_h != 0: # Before holiday pay decision, solution is indenpendent of z and h
-                    sol.c[t,:,z,i_h] = sol.c[t,:,0,0]
-                    sol.inv_v[t,:,z,i_h] = sol.inv_v[t,:,0,0]
-                else:
-                    for i_m, m in enumerate(par.grid_m):
-                        obj = lambda c: value_of_choice(c,t,m,h,z,par,sol)
-                        result = optimize.minimize_scalar(obj,method='bounded',bounds=(0,m))
-
-                        sol.c[t,i_m,z,i_h] = result.x
-                        sol.inv_v[t,i_m,z,i_h] = -1.0/result.fun
+    @njit   
+    def solve_egm(par,sol,sim):
+        for z in [0, 1]:
+            for i_h in range(par.Nh):
+                sol.m[-1,:,z,i_h] = np.linspace(0,par.a_max,par.Na+1)
+                sol.c[-1,:,z,i_h] = sol.m[-1,:,z,i_h]
+                
+            # Before last period
+            for t in range(par.T-2,-1,-1):
+                for i_h, h in enumerate(par.grid_h):
+                    if t >= par.TR and i_h != 0: # After retirement, solution is independent of z and h
+                        sol.c[t,:,z,i_h] = sol.c[t,:,0,0]
+                        sol.m[t,:,z,i_h] = sol.m[t,:,0,0]
+                    elif t >= par.TH and z == 1 and i_h != 0: # After early holiday pay, solution is independent of h
+                        sol.c[t,:,z,i_h] = sol.c[t,:,z,0]
+                        sol.m[t,:,z,i_h] = sol.m[t,:,z,0]
+                    elif t < par.TH-1 and i_h != 0: # Before holiday pay decision, solution is independent of z and h
+                        sol.c[t,:,z,i_h] = sol.c[t,:,0,0]
+                        sol.m[t,:,z,i_h] = sol.m[t,:,0,0]
+                    else:
+                        # Loop over end-of-period assets
+                        for i_a in range(1,par.Na+1):
+                            a = par.grid_a[i_a-1]
+                            still_working_next_period = t+1 <= par.TR-1
+                            if still_working_next_period:
+                                fac_vec = par.G[t]*par.psi_vec
+                                w = par.w
+                                xi = par.xi_vec
+                                
+                                if t+1 < par.TH-1:
+                                    h_plus_vec = np.repeat(0.0, len(fac_vec))
+                                elif t+1 == par.TH-1:
+                                    h_plus_vec = np.repeat(par.alpha, len(fac_vec))
+                                elif t+1 > par.TH-1 and z == 0:
+                                    h_plus_vec = np.repeat(((par.d_vec+par.delta-1)/fac_vec)*h, len(fac_vec))
+                                elif t+1 > par.TH-1 and z == 1:
+                                    h_plus_vec = np.repeat(0.0, len(fac_vec))
+                                
+                                if t+1 == par.TH and z == 1:
+                                    h_term_vec = ((par.d_vec+par.delta-1)/fac_vec)*h
+                                else:
+                                    h_term_vec = np.repeat(0.0,len(fac_vec))
+                                    
+                                m_plus_vec = (par.R/fac_vec)*a + xi + h_term_vec
+                                
+                                # Future c
+                                c_plus_vec = tools.interp_2d_vec(sol.m[t+1,:,z,i_h], par.grid_h, sol.c[t+1,:,z,:], m_plus_vec, h_plus_vec)
+                                
+                                # Average future marginal utility
+                                marg_u_plus_vec = marg_utility(fac_vec*c_plus_vec,par.rho)
+                                avg_marg_u_plus_vec = np.sum(w*marg_u_plus_vec)
+                                
+                                # Current c
+                                sol.c[t,i_a,z,i_h] = inv_marg_utility(par.beta*par.R*avg_marg_u_plus_vec,par.rho)
+                                
+                                # Current m
+                                sol.m[t,i_a,z,i_h] = a + sol.c[t,i_a,z,i_h]
+                            else:
+                                fac = par.G[t]
+        
+                                if t+1 == par.TR and z == 0:
+                                    h_term = (par.delta/fac)*h
+                                else:
+                                    h_term = 0.0
+                                
+                                m_plus = (par.R/fac)*a + 1 + h_term
+                                
+                                # Future c
+                                c_plus = tools.interp_2d(sol.m[t+1,:,z,i_h], par.grid_h, sol.c[t+1,:,z,:], m_plus, 0.0)
+                                
+                                # Average future marginal utility
+                                marg_u_plus = marg_utility(fac*c_plus,par.rho)
+                                avg_marg_u_plus = marg_u_plus
+                                
+                                # Current c
+                                sol.c[t,i_a,z,i_h] = inv_marg_utility(par.beta*par.R*avg_marg_u_plus,par.rho)
+                                
+                                # Current m
+                                sol.m[t,i_a,z,i_h] = a + sol.c[t,i_a,z,i_h]
+        
+                        # Add zero consumption
+                        sol.m[t,0,z,i_h] = 0.0
+                        sol.c[t,0,z,i_h] = 0.0
+                
+    @njit(parallel=True)
+    def value_functions(par,sol,sim):
+        # Compute value function
+        for z in [0, 1]:
+            for i_h in prange(par.Nh):
+                for i,c in enumerate(par.grid_m):
+                    sol.inv_v[-1,i,z,i_h] = 1.0/utility(c,par.rho)
+    
+            # Before last period
+            for t in range(par.T-2,-1,-1):
+                for i_h in range(par.Nh): #prange
+                    h = par.grid_h[i_h]
+                    if t >= par.TR and i_h != 0: # After retirement, solution is independent of z and h
+                        sol.inv_v[t,:,z,i_h] = sol.inv_v[t,:,0,0]
+                    elif t >= par.TH and z == 1 and i_h != 0: # After early holiday pay, solution is independent of h
+                        sol.inv_v[t,:,z,i_h] = sol.inv_v[t,:,z,0]
+                    elif t < par.TH-1 and i_h != 0: # Before holiday pay decision, solution is indenpendent of z and h
+                        sol.inv_v[t,:,z,i_h] = sol.inv_v[t,:,0,0]
+                    else:
+                        for i_m in prange(par.Nm):
+                            m = par.grid_m[i_m]
+                            c = tools.interp_linear_1d_scalar(sol.m[t,:,z,i_h], sol.c[t,:,z,i_h], m)
+                            v = value_of_choice(c,t,m,h,z,par,sol)
+                            sol.inv_v[t,i_m,z,i_h] = -1.0/v
+                            
+    # Solve by EGM
+    solve_egm(par,sol,sim)
+    value_functions(par,sol,sim)
 
     # 3. Simulate model
         
@@ -183,9 +271,31 @@ def run_model(par):
     # Initial values
     sim.m[:,0] = par.sim_mini 
     sim.p[:,0] = 0.0
+
+    @njit
+    def nearest(points,target,norm_fact):
+        target[0] = target[0]/norm_fact
+        dist = np.sum((points - target)**2, axis=1)
+        return np.argmin(dist)
     
     @njit(parallel=True)
     def simulate_time_loop(par,sol,sim):
+        # Prepare irregular interpolation
+        num_points = par.Nh*(par.Nm+1)
+        points = np.zeros((par.T,2,num_points,2))
+        values_c = np.zeros((par.T,2,num_points))
+        for t in range(par.T):
+            for z in [0,1]:
+                for i_h,h_loop in enumerate(par.grid_h):
+                    m_grid = sol.m[t,:,z,i_h]
+                    for i_m,m_loop in enumerate(m_grid):
+                        values_c[t,z,i_h*(par.Nm+1)+i_m] = sol.c[t,i_m,z,i_h]
+                    points[t,z,(par.Nm+1)*i_h:(par.Nm+1)*(i_h+1),:] = np.array(list(zip(m_grid, [h_loop]*len(m_grid))))
+        
+        # Normalize points
+        norm_fact = par.m_max/par.h_max
+        points[:,:,:,0] = points[:,:,:,0]/norm_fact
+
         # Unpack (helps numba)
         m = sim.m
         p = sim.p
@@ -194,12 +304,14 @@ def run_model(par):
         a = sim.a
         h = sim.h
         z = sim.z
-
+        
         # loop over first households and then time
         for i in prange(par.simN):
             for t in range(par.T):
                 # Consumption
-                c[i,t] = tools.interp_2d(par.grid_m, par.grid_h, sol.c[t,:,z[i],:], m[i,t], h[i,t])
+                #c[i,t] = griddata(points[t,z[i],:,:], values_c[t,z[i],:], (m[i,t], h[i,t]), method='nearest')*1.0
+                nearest_row = nearest(points[t,z[i],:,:], np.array([m[i,t], h[i,t]]), norm_fact)
+                c[i,t] = values_c[t,z[i],nearest_row]
                 a[i,t] = m[i,t] - c[i,t]
 
                 if t < par.T-1:
@@ -256,7 +368,7 @@ def run_model(par):
                         elif par.z_mode == 0:
                             z[i] = 0
                             
-    # Simulate model                       
+    # Simulate model                     
     simulate_time_loop(par,sol,sim)
 
     # Renormalize

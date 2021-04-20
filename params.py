@@ -10,7 +10,7 @@ spec = [('alpha', double), ('T', int32), ('TR', int32), ('TH', int32), ('rho', d
         ('Nd', int32), ('Nm', int32), ('Nh', int32), ('sim_mini', double), ('simN', int32),
         ('seed', int32), ('G', double[:]), ('psi_vec', double[:]), ('xi_vec', double[:]),
         ('d_vec', double[:]), ('w', double[:]), ('Nshocks', int32), ('grid_h', double[:]),
-        ('grid_m', double[:]), ('z_mode', int32)]
+        ('grid_m', double[:]), ('grid_a', double[:]), ('z_mode', int32), ('Na', int32), ('a_max', double)]
 
 @jitclass(spec)
 class par_class:
@@ -37,6 +37,8 @@ class par_class:
         self.Npsi = 6 # Number of quadrature points for psi
         self.Nd = 6 # Number of quadrature points for d
         self.Nm = 100 # Number of points in grid for m
+        self.Na = 100 # Number of points in grid for a
+        self.a_max = 10.0 # Maximum point in grid for a
         self.Nh = 20 # Number of points in grid for h
         self.z_mode = 2 # Mode for z
         self.sim_mini = 2.5 # Initial m in simulation
