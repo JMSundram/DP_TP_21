@@ -38,7 +38,7 @@ def run_model(par):
     # Create grids
     par.grid_m = tools.nonlinspace(1e-6,par.m_max,par.Nm,par.m_phi)
     par.grid_h = tools.nonlinspace(0,par.h_max,par.Nh,par.h_phi)
-    par.grid_a = tools.nonlinspace(1e-6,par.m_max,par.Nm,par.m_phi)
+    par.grid_a = tools.nonlinspace(1e-6,par.a_max,par.Na,par.a_phi)
      
     # Create solution and simulation
     spec = [('m', double[:,:,:,:]), ('c', double[:,:,:,:]), ('inv_v', double[:,:,:,:])]
