@@ -8,6 +8,7 @@ def calculate_euler_errors(sol,sim,par,grid_m):
             return c**(-rho)  
 
     euler_residual = np.nan + np.zeros((par.simN,par.T-1)) 
+    euler_residual_cons = np.nan + np.zeros((par.simN,par.T-1)) 
     a = np.nan + np.zeros((par.simN,par.T-1))
 
     for t in range(par.T-1):
@@ -52,6 +53,7 @@ def calculate_euler_errors(sol,sim,par,grid_m):
                 avg_marg_u_plus_vec = np.sum(w*marg_u_plus_vec)
 
                 euler_residual[i,t] = marg_utility(c,par.rho)-par.beta*par.R*avg_marg_u_plus_vec
+                euler_residual_cons[i,t] = c - (par.beta*par.R*avg_marg_u_plus_vec)**(-1/par.rho)
             else:
                 fac = par.G[t]
 
@@ -70,6 +72,7 @@ def calculate_euler_errors(sol,sim,par,grid_m):
                 avg_marg_u_plus = marg_u_plus
 
                 euler_residual[i,t] = marg_utility(c,par.rho)-par.beta*par.R*avg_marg_u_plus
+                euler_residual_cons[i,t] = c - (par.beta*par.R*avg_marg_u_plus)**(-1/par.rho)
 
     # 4. Calculate the average absolute euler residual
     I = (a>0)   # Define an indicator for a bigger than 0 (m>c)
@@ -78,7 +81,8 @@ def calculate_euler_errors(sol,sim,par,grid_m):
 
     c = (sim.c[:,0:par.T-1])  # The euler error is not defined in last period
 
-    nom_euler_error = np.log10(np.abs(eulers_indexed)/(c.flatten()[I.flatten()]))   
+    eulers_indexed_cons = euler_residual_cons.flatten()[I.flatten()]
+    nom_euler_error = np.log10(np.abs(eulers_indexed_cons)/(c.flatten()[I.flatten()]))   
     nom_euler_error = np.mean(nom_euler_error)
 
     return euler_error, nom_euler_error
